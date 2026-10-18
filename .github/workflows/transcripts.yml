@@ -1,0 +1,36 @@
+name: Download Transcripts
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 6 * * *"  # 每天北京时间14点自动跑一次
+
+permissions:
+  contents: read
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download transcripts
+        run: |
+          python scripts/channel_transcripts.py \
+            "https://www.youtube.com/@ltshijie" \
+            -o ./output --lang zh --max-videos 5
+
+      - name: Upload transcripts
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcripts-zh
+          path: ./output
+          retention-days: 30
+          if-no-files-found: error
