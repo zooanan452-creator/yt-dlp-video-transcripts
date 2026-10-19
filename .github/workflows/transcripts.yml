@@ -18,10 +18,35 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Install dependencies (upgrade yt-dlp to latest)
+        run: pip install -U yt-dlp
+
+      - name: Patch script to support cookies
+        run: |
+          python -c "
+          import pathlib
+          p = pathlib.Path('scripts/channel_transcripts.py')
+          s = p.read_text()
+          # Add cookiefile to all ydl_opts dicts (3 occurrences)
+          s = s.replace(
+              '\"quiet\": True,',
+              '\"quiet\": True,\n        \"cookiefile\": \"youtube_cookies.txt\",',
+          )
+          p.write_text(s)
+          print('Patched channel_transcripts.py with cookiefile support')
+          "
+
+      - name: Write cookies file
+        if: env.YT_COOKIES != ''
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        run: |
+          printf '%s' "$YT_COOKIES" > youtube_cookies.txt
+          echo "Cookies file written ($(wc -l < youtube_cookies.txt) lines)"
 
       - name: Download transcripts
+        env:
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
         run: |
           python scripts/channel_transcripts.py \
             "https://www.youtube.com/@ltshijie" \
