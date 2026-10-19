@@ -69,6 +69,49 @@ def require_yt_dlp() -> None:
         ) from _YT_DLP_IMPORT_ERROR
 
 
+def env_ydl_opts() -> dict[str, Any]:
+    """Shared auth / anti-bot yt-dlp options, driven by environment variables.
+
+    YTDLP_COOKIEFILE      path to a Netscape-format cookies.txt
+    YTDLP_PROXY           proxy URL, e.g. http://127.0.0.1:7890
+    YTDLP_EXTRACTOR_ARGS  CLI-style extractor args, e.g.
+                          "youtube:fetch_pot=always" or
+                          "youtube:player_client=default,web_safari"
+    """
+    opts: dict[str, Any] = {}
+
+    cookiefile = os.environ.get("YTDLP_COOKIEFILE", "").strip()
+    if cookiefile and Path(cookiefile).is_file():
+        opts["cookiefile"] = cookiefile
+
+    proxy = os.environ.get("YTDLP_PROXY", "").strip()
+    if proxy:
+        opts["proxy"] = proxy
+
+    raw = os.environ.get("YTDLP_EXTRACTOR_ARGS", "").strip()
+    if raw:
+        parsed: dict[str, dict[str, list[str]]] = {}
+        for group in raw.split(";"):
+            group = group.strip()
+            if not group or ":" not in group:
+                continue
+            ie_key, rest = group.split(":", 1)
+            bucket = parsed.setdefault(ie_key.strip(), {})
+            for pair in rest.split(","):
+                pair = pair.strip()
+                if not pair:
+                    continue
+                if "=" in pair:
+                    key, value = pair.split("=", 1)
+                    bucket.setdefault(key.strip(), []).append(value.strip())
+                else:
+                    bucket.setdefault("player_client", []).append(pair)
+        if parsed:
+            opts["extractor_args"] = parsed
+
+    return opts
+
+
 def normalize_channel_url(url: str) -> str:
     url = url.strip()
     if not url:
@@ -98,9 +141,9 @@ def resolve_video_url(entry: dict[str, Any], video_id: str) -> str:
 
 def slugify(text: str, max_length: int = 80) -> str:
     text = unicodedata.normalize("NFKD", text)
-    text = text.encode("ascii", "ignore").decode("ascii")
+    # Keep non-ASCII letters (e.g. Chinese titles) instead of dropping them.
     text = text.lower()
-    text = re.sub(r"[^\w\s-]", "", text)
+    text = re.sub(r"[^\w\s-]", "", text, flags=re.UNICODE)
     text = re.sub(r"[-\s]+", "-", text).strip("-")
     return text[:max_length].rstrip("-") or "untitled"
 
@@ -321,6 +364,7 @@ def list_channel_videos(channel_url: str) -> tuple[str, list[dict[str, Any]]]:
         "no_warnings": True,
         "extract_flat": "in_playlist",
         "skip_download": True,
+        **env_ydl_opts(),
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -555,6 +599,7 @@ def fetch_video_metadata(video_url: str) -> dict[str, Any]:
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
+        **env_ydl_opts(),
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(video_url, download=False)
@@ -718,6 +763,7 @@ def download_subtitle(
         "subtitlesformat": "vtt/best",
         "outtmpl": str(out_dir / "%(id)s"),
         **sub_opts,
+        **env_ydl_opts(),
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
