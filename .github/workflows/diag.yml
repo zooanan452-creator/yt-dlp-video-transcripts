@@ -17,7 +17,7 @@ jobs:
       - name: install
         run: |
           pip install -q -U "yt-dlp[default]" bgutil-ytdlp-pot-provider
-          docker run -d --name p -p 4416:4416 --init brainicism/bgutil-ytdlp-pot-provider:latest
+          docker run -d --name potprovider -p 4416:4416 --init brainicism/bgutil-ytdlp-pot-provider:latest
           sleep 10
           curl -s http://127.0.0.1:4416/ping; echo
 
