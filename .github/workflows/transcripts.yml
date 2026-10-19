@@ -1,61 +1,109 @@
 name: Download Transcripts
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      channel_url:
+        description: "YouTube 频道 / 播放列表 / 视频地址"
+        required: false
+        default: "https://www.youtube.com/@ltshijie"
+      lang:
+        description: "字幕语言优先级（逗号分隔，zh 表示中文）"
+        required: false
+        default: "zh"
+      max_videos:
+        description: "抓取最近多少个视频"
+        required: false
+        default: "5"
   schedule:
-    - cron: "0 6 * * *"  # 每天北京时间14点自动跑一次
+    # 每天 UTC 06:00（北京 14:00）自动跑一次
+    - cron: "0 6 * * *"
 
 permissions:
   contents: read
 
+concurrency:
+  group: transcripts-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   download:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.12"
 
-      - name: Install dependencies (upgrade yt-dlp to latest)
-        run: pip install -U yt-dlp
-
-      - name: Patch script to support cookies
+      - name: Install yt-dlp and PO token plugin
         run: |
-          python -c "
-          import pathlib
-          p = pathlib.Path('scripts/channel_transcripts.py')
-          s = p.read_text()
-          # Add cookiefile to all ydl_opts dicts (3 occurrences)
-          s = s.replace(
-              '\"quiet\": True,',
-              '\"quiet\": True,\n        \"cookiefile\": \"youtube_cookies.txt\",',
-          )
-          p.write_text(s)
-          print('Patched channel_transcripts.py with cookiefile support')
-          "
+          python -m pip install --upgrade pip
+          pip install --upgrade "yt-dlp[default]" bgutil-ytdlp-pot-provider
+          python -m yt_dlp --version
 
-      - name: Write cookies file
-        if: env.YT_COOKIES != ''
-        env:
-          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+      # GitHub Actions 的机房 IP 会被 YouTube 判定为机器人，
+      # 用 bgutil 提供的 PO token 服务端可以免登录通过校验。
+      - name: Start PO token provider
         run: |
-          printf '%s' "$YT_COOKIES" > youtube_cookies.txt
-          echo "Cookies file written ($(wc -l < youtube_cookies.txt) lines)"
+          docker run -d --name bgutil-provider -p 4416:4416 --init \
+            brainicism/bgutil-ytdlp-pot-provider:latest
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4416/ping >/dev/null 2>&1; then
+              echo "PO token provider is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::warning::PO token provider 未就绪，将直接尝试下载"
+          docker logs bgutil-provider 2>&1 | tail -30 || true
 
       - name: Download transcripts
         env:
-          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+          YTDLP_EXTRACTOR_ARGS: "youtube:fetch_pot=always"
+          CHANNEL_URL: ${{ github.event.inputs.channel_url || 'https://www.youtube.com/@ltshijie' }}
+          SUB_LANG: ${{ github.event.inputs.lang || 'zh' }}
+          MAX_VIDEOS: ${{ github.event.inputs.max_videos || '5' }}
         run: |
-          python scripts/channel_transcripts.py \
-            "https://www.youtube.com/@ltshijie" \
-            -o ./output --lang zh --max-videos 5
+          set -euo pipefail
+
+          # 可选：如果配置了 YOUTUBE_COOKIES secret，就额外带上 cookies
+          if [ -n "${YOUTUBE_COOKIES:-}" ]; then
+            printf '%s\n' "$YOUTUBE_COOKIES" > "$RUNNER_TEMP/cookies.txt"
+            export YTDLP_COOKIEFILE="$RUNNER_TEMP/cookies.txt"
+            echo "使用 cookies 认证"
+          else
+            echo "未配置 cookies，仅使用 PO token"
+          fi
+
+          python scripts/channel_transcripts.py "$CHANNEL_URL" \
+            -o ./output \
+            --lang "$SUB_LANG" \
+            --max-videos "$MAX_VIDEOS" \
+            --retries 5 \
+            --retry-delay 5 \
+            --force
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### 抓取结果" >> $GITHUB_STEP_SUMMARY
+          if [ -f ./output/index.md ]; then
+            cat ./output/index.md >> $GITHUB_STEP_SUMMARY
+          else
+            echo "没有生成 index.md" >> $GITHUB_STEP_SUMMARY
+          fi
+          find ./output -name "*.txt" -o -name "*.md" | head -30
 
       - name: Upload transcripts
         uses: actions/upload-artifact@v4
         with:
-          name: transcripts-zh
+          name: transcripts-${{ github.event.inputs.lang || 'zh' }}
           path: ./output
           retention-days: 30
           if-no-files-found: error
