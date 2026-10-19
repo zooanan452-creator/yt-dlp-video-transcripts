@@ -1,5 +1,16 @@
 name: Download Transcripts
 
+# 注意：GitHub Actions 的机房 IP 被 YouTube 判定为机器人。
+# 实测 8 种播放器客户端（default / tv / web_safari / mweb / android_vr /
+# tv_simply / ios / web_embedded）+ PO token 服务端全部返回
+# "Sign in to confirm you're not a bot"，只有携带 cookies 才能通过。
+#
+# 因此这里只保留手动触发，不设定时任务：
+#   1. 在仓库 Settings → Secrets and variables → Actions 里新增 secret
+#      YOUTUBE_COOKIES，内容是浏览器导出的 cookies.txt 全文；
+#   2. 到 Actions 页面手动 Run workflow。
+# 没有 cookies 时，请改用仓库根目录的 run_transcripts.bat 在本机跑。
+
 on:
   workflow_dispatch:
     inputs:
@@ -15,16 +26,9 @@ on:
         description: "抓取最近多少个视频"
         required: false
         default: "5"
-  schedule:
-    # 每天 UTC 06:00（北京 14:00）自动跑一次
-    - cron: "0 6 * * *"
 
 permissions:
   contents: read
-
-concurrency:
-  group: transcripts-${{ github.ref }}
-  cancel-in-progress: false
 
 jobs:
   download:
@@ -44,13 +48,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --upgrade "yt-dlp[default]" bgutil-ytdlp-pot-provider
-          python -m yt_dlp --version
 
-      # GitHub Actions 的机房 IP 会被 YouTube 判定为机器人，
-      # 用 bgutil 提供的 PO token 服务端可以免登录通过校验。
       - name: Start PO token provider
         run: |
-          docker run -d --name bgutil-provider -p 4416:4416 --init \
+          docker run -d --name potprovider -p 4416:4416 --init \
             brainicism/bgutil-ytdlp-pot-provider:latest
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:4416/ping >/dev/null 2>&1; then
@@ -59,8 +60,7 @@ jobs:
             fi
             sleep 2
           done
-          echo "::warning::PO token provider 未就绪，将直接尝试下载"
-          docker logs bgutil-provider 2>&1 | tail -30 || true
+          echo "::warning::PO token provider 未就绪"
 
       - name: Download transcripts
         env:
@@ -72,14 +72,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 可选：如果配置了 YOUTUBE_COOKIES secret，就额外带上 cookies
-          if [ -n "${YOUTUBE_COOKIES:-}" ]; then
-            printf '%s\n' "$YOUTUBE_COOKIES" > "$RUNNER_TEMP/cookies.txt"
-            export YTDLP_COOKIEFILE="$RUNNER_TEMP/cookies.txt"
-            echo "使用 cookies 认证"
-          else
-            echo "未配置 cookies，仅使用 PO token"
+          if [ -z "${YOUTUBE_COOKIES:-}" ]; then
+            echo "::error::未配置 YOUTUBE_COOKIES secret，GitHub 机房 IP 会被 YouTube 拦截。请改用本机 run_transcripts.bat。"
+            exit 1
           fi
+
+          printf '%s\n' "$YOUTUBE_COOKIES" > "$RUNNER_TEMP/cookies.txt"
+          export YTDLP_COOKIEFILE="$RUNNER_TEMP/cookies.txt"
 
           python scripts/channel_transcripts.py "$CHANNEL_URL" \
             -o ./output \
@@ -98,7 +97,6 @@ jobs:
           else
             echo "没有生成 index.md" >> $GITHUB_STEP_SUMMARY
           fi
-          find ./output -name "*.txt" -o -name "*.md" | head -30
 
       - name: Upload transcripts
         uses: actions/upload-artifact@v4
