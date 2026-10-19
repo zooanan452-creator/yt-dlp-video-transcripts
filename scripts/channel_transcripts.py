@@ -139,11 +139,22 @@ def resolve_video_url(entry: dict[str, Any], video_id: str) -> str:
     return f"https://www.youtube.com/watch?v={video_id}"
 
 
+CJK_RANGES = (
+    "\u3400-\u4dbf"  # CJK Extension A
+    "\u4e00-\u9fff"  # CJK Unified Ideographs
+    "\uf900-\ufaff"  # CJK Compatibility Ideographs
+    "\u3040-\u30ff"  # Hiragana + Katakana
+    "\uac00-\ud7af"  # Hangul syllables
+)
+
+
 def slugify(text: str, max_length: int = 80) -> str:
     text = unicodedata.normalize("NFKD", text)
-    # Keep non-ASCII letters (e.g. Chinese titles) instead of dropping them.
+    # Strip combining marks so accented Latin letters fold to ASCII
+    # (e.g. "Türkçe" -> "turkce"), while keeping CJK titles readable.
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(rf"[^A-Za-z0-9\s{CJK_RANGES}-]", "", text)
     text = text.lower()
-    text = re.sub(r"[^\w\s-]", "", text, flags=re.UNICODE)
     text = re.sub(r"[-\s]+", "-", text).strip("-")
     return text[:max_length].rstrip("-") or "untitled"
 
