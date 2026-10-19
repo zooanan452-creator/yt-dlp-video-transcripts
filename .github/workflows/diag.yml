@@ -1,0 +1,32 @@
+name: diag
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install
+        run: |
+          pip install -q -U "yt-dlp[default]" bgutil-ytdlp-pot-provider
+          docker run -d --name p -p 4416:4416 --init brainicism/bgutil-ytdlp-pot-provider:latest
+          sleep 10
+          curl -s http://127.0.0.1:4416/ping; echo
+
+      - name: probe clients
+        run: |
+          VID="https://www.youtube.com/watch?v=6-DZ7YIYt_o"
+          for C in default tv web_safari mweb android_vr tv_simply ios web_embedded; do
+            echo "================ client=$C ================"
+            timeout 90 yt-dlp --skip-download --list-subs \
+              --extractor-args "youtube:player_client=$C;fetch_pot=always" \
+              "$VID" 2>&1 | grep -E "ERROR|Available|zh-CN|no automatic|Sign in" | head -5
+          done
